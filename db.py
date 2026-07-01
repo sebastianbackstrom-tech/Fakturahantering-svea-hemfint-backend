@@ -50,7 +50,7 @@ load_dotenv()
 logger = logging.getLogger("fakturahantering.db")
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]  # använd service_role-nyckeln på backend, ALDRIG i frontend
+SUPABASE_KEY = os.environ["SUPABASE_KEY"]  
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -59,24 +59,24 @@ TABLE = "cases"
 
 class DatabaseError(Exception):
     """Wrappar alla databasfel så att main.py kan hantera dem enhetligt
-    istället för att låta ett rått Supabase-undantag studsa upp till klienten."""
+    istället för att låta ett Supabase-undantag studsa upp till klienten."""
 
 
-class CaseNotFoundError(Exception):
+class CaseNotFoundError(Exception): # Felhantering för ärenden som inte finns i databasen
     """Ärendet med angivet ID hittades inte."""
 
 
-def _new_id() -> str:
+def _new_id() -> str: # Genererar ett nytt unikt ID för ett ärende. Använder UUID4 och tar de första 12 tecknen.
     return uuid.uuid4().hex[:12]
 
 
-def _now_ms() -> int:
+def _now_ms() -> int: #Gererar nuvarande tid i millisekunder. Används för att sätta created/updated-tidsstämplar
     return int(time.time() * 1000)
 
 
-def _run(query, action: str):
+def _run(query, action: str): 
     """Kör en Supabase-query och normaliserar fel till DatabaseError,
-    med loggning, så att varje anropsställe inte behöver egen try/except."""
+    med loggning, så att varje anropsställe inte behöver egen try/except statement."""
     try:
         return query.execute()
     except Exception as e:
@@ -84,9 +84,9 @@ def _run(query, action: str):
         raise DatabaseError(f"Databasfel vid {action}") from e
 
 
-# ─── READ ──────────────────────────────────────────────────────────────────
+# ─── READ DATA ──────────────────────────────────────────────────────────────────
 
-def list_cases(
+def list_cases( #Gererar en lista med ärenden från databasen, med valfria filter för status, källa, sökord och förfallodatum.
     status: Optional[str] = None,
     source: Optional[str] = None,
     search: Optional[str] = None,
@@ -100,7 +100,7 @@ def list_cases(
     result = _run(query.order("created", desc=True), "list_cases")
     rows = result.data or []
 
-    # Filter som är enklare att göra i Python än i SQL (matchar frontend-logiken 1:1)
+    # Filter som är enklare att göra i Python än i SQL (matchar frontend-logiken med dubblettkontroll och sökning)
     if source == "svea":
         rows = [r for r in rows if r.get("orderSvea")]
     elif source == "hemfint":
@@ -129,12 +129,12 @@ def list_cases(
     return rows
 
 
-def get_case(case_id: str) -> Optional[dict]:
+def get_case(case_id: str) -> Optional[dict]: # Hämtar ett enskilt ärende från databasen baserat på dess ID. Returnerar None om ärendet inte hittas.
     result = _run(supabase.table(TABLE).select("*").eq("id", case_id), "get_case")
     return result.data[0] if result.data else None
 
 
-def order_exists(field: str, value: str, exclude_id: Optional[str] = None) -> bool:
+def order_exists(field: str, value: str, exclude_id: Optional[str] = None) -> bool: 
     """Kollar om ett ordernummer redan finns. Ange exclude_id vid uppdatering
     av ett befintligt ärende, så att ärendet inte krockar med sig självt."""
     query = supabase.table(TABLE).select("id").eq(field, value)
@@ -144,9 +144,9 @@ def order_exists(field: str, value: str, exclude_id: Optional[str] = None) -> bo
     return len(result.data) > 0
 
 
-# ─── CREATE ────────────────────────────────────────────────────────────────
+# ─── CREATE CASE ────────────────────────────────────────────────────────────────
 
-def create_case(payload: CaseCreate) -> dict:
+def create_case(payload: CaseCreate) -> dict: #Skapar ett nytt ärende i databasen baserat på payload. Om payload.note inte är None, läggs en anteckning till i ärendets historik.
     now = _now_ms()
     history = []
     if payload.note:
@@ -169,26 +169,26 @@ def create_case(payload: CaseCreate) -> dict:
     return result.data[0]
 
 
-# ─── UPDATE ────────────────────────────────────────────────────────────────
+# ─── UPDATE CASE ────────────────────────────────────────────────────────────────
 
-def update_case(case_id: str, payload: CaseUpdate) -> dict:
+def update_case(case_id: str, payload: CaseUpdate) -> dict: #Uppdaterar ett befintligt ärende i databasen baserat på dess ID. Om ärendet inte hittas, kastas ett CaseNotFoundError.
     existing = get_case(case_id)
     if existing is None:
         raise CaseNotFoundError(case_id)
 
     updates: dict[str, Any] = {"updated": _now_ms()}
 
-    for field in ("orderSvea", "orderHemfint", "kund", "belopp", "status", "fakturadatum", "forfallodatum"):
+    for field in ("orderSvea", "orderHemfint", "kund", "belopp", "status", "fakturadatum", "forfallodatum"): #Går igenom alla fält som kan uppdateras och lägger till dem i updates-dictionaryn om de inte är None.
         value = getattr(payload, field)
         if value is not None:
             updates[field] = value
 
-    if payload.note:
+    if payload.note: #Lägger till en ny anteckning i ärendets historik om payload.note inte är None. Historiken lagras som en lista av dictionaries med tidsstämpel, text och typ.
         history = existing.get("history") or []
         history.append({"ts": _now_ms(), "text": payload.note, "type": None})
         updates["history"] = history
 
-    result = _run(supabase.table(TABLE).update(updates).eq("id", case_id), "update_case")
+    result = _run(supabase.table(TABLE).update(updates).eq("id", case_id), "update_case") #Kör en uppdateringsquery mot databasen med de samlade uppdateringarna. Om ärendet inte hittas, kastas ett CaseNotFoundError.
     return result.data[0]
 
 
@@ -202,11 +202,11 @@ def bulk_upsert_from_external(rows: list[dict]) -> dict:
     existing_svea = {r["orderSvea"] for r in all_cases if r.get("orderSvea")}
     existing_hemfint = {r["orderHemfint"] for r in all_cases if r.get("orderHemfint")}
 
-    to_insert: list[dict[str, Any]] = []
+    to_insert: list[dict[str, Any]] = [] #Skapar en lista med dictionaries som ska infogas i databasen. Varje dictionary representerar ett nytt ärende med alla nödvändiga fält.
     added, skipped = 0, 0
     now = _now_ms()
 
-    for row in rows:
+    for row in rows: #Går igenom varje rad som skickats in och kontrollerar om ordernumret redan finns i databasen. Om det inte finns, läggs raden till i to_insert-listan. Om det redan finns, ökas skipped-räknaren.
         svea = row.get("orderSvea", "")
         hemfint = row.get("orderHemfint", "")
 
@@ -220,7 +220,7 @@ def bulk_upsert_from_external(rows: list[dict]) -> dict:
             skipped += 1
             continue
 
-        to_insert.append({
+        to_insert.append({ #Skapar en ny dictionary med alla nödvändiga fält för det nya ärendet och lägger till den i to_insert-listan. Fälten inkluderar ett nytt unikt ID, ordernummer, kund, belopp, status, fakturadatum, förfallodatum, skapad- och uppdaterad-tidsstämpel samt en tom historiklista.
             "id": _new_id(),
             "orderSvea": svea,
             "orderHemfint": hemfint,
@@ -240,7 +240,7 @@ def bulk_upsert_from_external(rows: list[dict]) -> dict:
         added += 1
 
     if to_insert:
-        _run(supabase.table(TABLE).insert(to_insert), "bulk_upsert_from_external")
+        _run(supabase.table(TABLE).insert(to_insert), "bulk_upsert_from_external") #Kör en infogningsquery mot databasen med alla nya ärenden som samlats i to_insert-listan.
 
     return {"added": added, "updated": 0, "skipped": skipped}
 
@@ -257,7 +257,7 @@ def get_stats() -> dict:
     rows = list_cases()
     today = _now_ms()
 
-    total = len(rows)
+    total = len(rows) #Gererar statistik över ärenden i databasen, inklusive totalt antal, öppna, pågående, lösta och förfallna ärenden. Förfallna ärenden definieras som de som har ett förfallodatum som är tidigare än dagens datum och som inte är markerade som lösta eller stängda.
     open_ = sum(1 for r in rows if r["status"] == "open")
     progress = sum(1 for r in rows if r["status"] == "progress")
     resolved = sum(1 for r in rows if r["status"] in ("resolved", "closed"))
@@ -277,7 +277,7 @@ def get_stats() -> dict:
     }
 
 
-def _date_to_ms(date_str: str) -> int:
+def _date_to_ms(date_str: str) -> int: #Funktion som konverterar ett datum i formatet 'YYYY-MM-DD' till millisekunder sedan epoken (1970-01-01). 
     """Konverterar 'YYYY-MM-DD' till millisekunder för enkel jämförelse."""
     from datetime import datetime
     try:
