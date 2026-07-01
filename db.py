@@ -24,12 +24,21 @@ Tabellschema att skapa i Supabase (SQL Editor):
     -- Index för snabbare dubblettkontroll och sökning
     create index idx_cases_order_svea on cases ("orderSvea");
     create index idx_cases_order_hemfint on cases ("orderHemfint");
+
+    -- Rekommenderat: unika index på DB-nivå så att två samtidiga requests
+    -- aldrig kan skapa dubbletter (applikationens order_exists()-kontroll
+    -- skyddar inte mot en race condition på egen hand).
+    create unique index idx_cases_order_svea_unique
+        on cases ("orderSvea") where "orderSvea" <> '';
+    create unique index idx_cases_order_hemfint_unique
+        on cases ("orderHemfint") where "orderHemfint" <> '';
 """
 
 import os
 import time
 import uuid
-from typing import Optional
+import logging
+from typing import Any, Optional
 
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -37,6 +46,8 @@ from dotenv import load_dotenv
 from models import CaseCreate, CaseUpdate
 
 load_dotenv()
+
+logger = logging.getLogger("fakturahantering.db")
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]  # använd service_role-nyckeln på backend, ALDRIG i frontend
@@ -46,12 +57,31 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 TABLE = "cases"
 
 
+class DatabaseError(Exception):
+    """Wrappar alla databasfel så att main.py kan hantera dem enhetligt
+    istället för att låta ett rått Supabase-undantag studsa upp till klienten."""
+
+
+class CaseNotFoundError(Exception):
+    """Ärendet med angivet ID hittades inte."""
+
+
 def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _run(query, action: str):
+    """Kör en Supabase-query och normaliserar fel till DatabaseError,
+    med loggning, så att varje anropsställe inte behöver egen try/except."""
+    try:
+        return query.execute()
+    except Exception as e:
+        logger.error(f"Databasfel vid {action}: {e}")
+        raise DatabaseError(f"Databasfel vid {action}") from e
 
 
 # ─── READ ──────────────────────────────────────────────────────────────────
@@ -67,7 +97,7 @@ def list_cases(
     if status:
         query = query.eq("status", status)
 
-    result = query.order("created", desc=True).execute()
+    result = _run(query.order("created", desc=True), "list_cases")
     rows = result.data or []
 
     # Filter som är enklare att göra i Python än i SQL (matchar frontend-logiken 1:1)
@@ -100,12 +130,17 @@ def list_cases(
 
 
 def get_case(case_id: str) -> Optional[dict]:
-    result = supabase.table(TABLE).select("*").eq("id", case_id).execute()
+    result = _run(supabase.table(TABLE).select("*").eq("id", case_id), "get_case")
     return result.data[0] if result.data else None
 
 
-def order_exists(field: str, value: str) -> bool:
-    result = supabase.table(TABLE).select("id").eq(field, value).execute()
+def order_exists(field: str, value: str, exclude_id: Optional[str] = None) -> bool:
+    """Kollar om ett ordernummer redan finns. Ange exclude_id vid uppdatering
+    av ett befintligt ärende, så att ärendet inte krockar med sig självt."""
+    query = supabase.table(TABLE).select("id").eq(field, value)
+    if exclude_id:
+        query = query.neq("id", exclude_id)
+    result = _run(query, "order_exists")
     return len(result.data) > 0
 
 
@@ -117,7 +152,7 @@ def create_case(payload: CaseCreate) -> dict:
     if payload.note:
         history.append({"ts": now, "text": payload.note, "type": "skapad"})
 
-    row = {
+    row: dict[str, Any] = {
         "id": _new_id(),
         "orderSvea": payload.orderSvea or "",
         "orderHemfint": payload.orderHemfint or "",
@@ -130,7 +165,7 @@ def create_case(payload: CaseCreate) -> dict:
         "updated": now,
         "history": history,
     }
-    result = supabase.table(TABLE).insert(row).execute()
+    result = _run(supabase.table(TABLE).insert(row), "create_case")
     return result.data[0]
 
 
@@ -138,7 +173,10 @@ def create_case(payload: CaseCreate) -> dict:
 
 def update_case(case_id: str, payload: CaseUpdate) -> dict:
     existing = get_case(case_id)
-    updates = {"updated": _now_ms()}
+    if existing is None:
+        raise CaseNotFoundError(case_id)
+
+    updates: dict[str, Any] = {"updated": _now_ms()}
 
     for field in ("orderSvea", "orderHemfint", "kund", "belopp", "status", "fakturadatum", "forfallodatum"):
         value = getattr(payload, field)
@@ -150,7 +188,7 @@ def update_case(case_id: str, payload: CaseUpdate) -> dict:
         history.append({"ts": _now_ms(), "text": payload.note, "type": None})
         updates["history"] = history
 
-    result = supabase.table(TABLE).update(updates).eq("id", case_id).execute()
+    result = _run(supabase.table(TABLE).update(updates).eq("id", case_id), "update_case")
     return result.data[0]
 
 
@@ -160,10 +198,11 @@ def bulk_upsert_from_external(rows: list[dict]) -> dict:
     skriver in nya ärenden. Hoppar över rader vars ordernummer redan finns,
     precis som frontends gamla doImport()-logik gjorde.
     """
-    existing_svea = {r["orderSvea"] for r in list_cases() if r.get("orderSvea")}
-    existing_hemfint = {r["orderHemfint"] for r in list_cases() if r.get("orderHemfint")}
+    all_cases = list_cases()  # en enda hämtning (tidigare hämtades allt två gånger)
+    existing_svea = {r["orderSvea"] for r in all_cases if r.get("orderSvea")}
+    existing_hemfint = {r["orderHemfint"] for r in all_cases if r.get("orderHemfint")}
 
-    to_insert = []
+    to_insert: list[dict[str, Any]] = []
     added, skipped = 0, 0
     now = _now_ms()
 
@@ -201,7 +240,7 @@ def bulk_upsert_from_external(rows: list[dict]) -> dict:
         added += 1
 
     if to_insert:
-        supabase.table(TABLE).insert(to_insert).execute()
+        _run(supabase.table(TABLE).insert(to_insert), "bulk_upsert_from_external")
 
     return {"added": added, "updated": 0, "skipped": skipped}
 
@@ -209,7 +248,7 @@ def bulk_upsert_from_external(rows: list[dict]) -> dict:
 # ─── DELETE ────────────────────────────────────────────────────────────────
 
 def delete_case(case_id: str) -> None:
-    supabase.table(TABLE).delete().eq("id", case_id).execute()
+    _run(supabase.table(TABLE).delete().eq("id", case_id), "delete_case")
 
 
 # ─── STATS ─────────────────────────────────────────────────────────────────
