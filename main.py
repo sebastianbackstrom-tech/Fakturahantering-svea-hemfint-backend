@@ -56,7 +56,7 @@ logger = logging.getLogger("fakturahantering")
 app = FastAPI(title="Fakturahantering API", version="1.0.0")
 
 # ─── GLOBAL EXCEPTION HANDLERS ───────────────────────────────────────────────────────────────────
-@app.exception_handler(DatabaseError)
+@app.exception_handler(db.DatabaseError)
 
 def handle_database_error(request: Request, exc: DatabaseError): #Metod för att hantera databasfel. Loggar felet och returnerar ett 503-svar till klienten.
     logger.error(f"Database error vid {request.method} {request.url.path}: {exc}")
@@ -65,7 +65,7 @@ def handle_database_error(request: Request, exc: DatabaseError): #Metod för att
         content={"detail": "Databasfel. Kontakta administratören."},
     )
 
-@app.exception_handler(CaseNotFoundError)
+@app.exception_handler(db.CaseNotFoundError)
 
 def handle_case_not_found_error(request: Request, exc: CaseNotFoundError): #Metod för att hantera ärendet hittades inte-fel. Loggar felet och returnerar ett 404-svar till klienten.
     logger.warning(f"Ärendet hittades inte vid {request.method} {request.url.path}: {exc}")
