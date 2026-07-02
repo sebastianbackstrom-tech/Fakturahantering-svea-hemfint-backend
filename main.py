@@ -34,15 +34,18 @@ Endpoints (GET/SET-metoder mot frontend):
     GET    /export/xlsx            -> ladda ner aktuell databas som .xlsx
     GET    /export/csv             -> ladda ner aktuell databas som .csv
 """
+import os 
+import logging
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request  
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from typing import Optional
 import logging
 
 from models import CaseCreate, CaseUpdate, CaseOut
 import db
+from db import DatabaseError, CaseNotFoundError # Dras ej lokalt längre istället importeras från db.py  
 import exporter
 from external_source import fetch_external_data
 from scheduler import start_scheduler
@@ -52,11 +55,41 @@ logger = logging.getLogger("fakturahantering")
 
 app = FastAPI(title="Fakturahantering API", version="1.0.0")
 
+# ─── GLOBAL EXCEPTION HANDLERS ───────────────────────────────────────────────────────────────────
+@app.exception_handler(DatabaseError)
+
+def handle_database_error(request: Request, exc: DatabaseError): #Metod för att hantera databasfel. Loggar felet och returnerar ett 503-svar till klienten.
+    logger.error(f"Database error vid {request.method} {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Databasfel. Kontakta administratören."},
+    )
+
+@app.exception_handler(CaseNotFoundError)
+
+def handle_case_not_found_error(request: Request, exc: CaseNotFoundError): #Metod för att hantera ärendet hittades inte-fel. Loggar felet och returnerar ett 404-svar till klienten.
+    logger.warning(f"Ärendet hittades inte vid {request.method} {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=404,
+        content={"detail": "Ärendet hittades inte."},
+    )
+    
+    
+
+
+# ─── CORS ───────────────────────────────────────────────────────────────────
+ALLOWED_ORIGINS= [ #Variabel för att tillåta frontend (annan origin, t.ex. GitHub Pages eller lokal fil) att anropa API:et.
+    origin.strip()
+    for origin in os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+    if origin.strip()
+]    
+
+
 # Tillåt frontend (annan origin, t.ex. GitHub Pages eller lokal fil) att anropa API:et.
 # Byt ut "*" mot din riktiga domän i produktion.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
