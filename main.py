@@ -101,6 +101,10 @@ def on_startup():
     start_scheduler()
     logger.info("Backend startad. Dagligt schema aktiverat.")
 
+# Endpoint utan data, används av load balancer / health check för att se om appen är igång.
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 # ─── CRUD: ärenden ────────────────────────────────────────────────────────────
 
@@ -119,7 +123,7 @@ def get_cases(
 def get_case(case_id: str):
     case = db.get_case(case_id)
     if not case:
-        raise HTTPException(status_code=404, detail="Ärendet hittades inte")
+        raise CaseNotFoundError(case_id) #specificerar att ärendet inte hittades, vilket hanteras av exception handlern ovan.
     return case
 
 
@@ -138,15 +142,22 @@ def update_case(case_id: str, payload: CaseUpdate):
     """Uppdatera ärende. Om 'note' skickas med läggs den till i historiken."""
     case = db.get_case(case_id)
     if not case:
-        raise HTTPException(status_code=404, detail="Ärendet hittades inte")
+        raise CaseNotFoundError(case_id)
+    
+    if payload.orderSvea and db.order_exists("orderSvea", payload.orderSvea, exclude_id=case_id):
+        raise HTTPException(status_code=409, detail="Svea-ordernumret finns redan på ett annat ärende")
+    if payload.orderHemfint and db.order_exists("orderHemfint", payload.orderHemfint, exclude_id=case_id):
+        raise HTTPException(status_code=409, detail="Hemfint-ordernumret finns redan på ett annat ärende")
+    
+    #Db.update_case hanterar själva uppdateringen och historiken. Kastar själv CaseNotFoundError om ärendet skulle försvinna mellan kontrollen och detta anrop Om 'note' skickas med läggs den till i historiken.
     return db.update_case(case_id, payload)
 
 
-@app.delete("/cases/{case_id}", status_code=204)
+@app.delete("/cases/{case_id}", status_code=204) # Delete endpoint för att ta bort ett ärende. Returnerar 204 No Content 
 def delete_case(case_id: str):
     case = db.get_case(case_id)
     if not case:
-        raise HTTPException(status_code=404, detail="Ärendet hittades inte")
+        raise CaseNotFoundError(case_id)
     db.delete_case(case_id)
 
 
