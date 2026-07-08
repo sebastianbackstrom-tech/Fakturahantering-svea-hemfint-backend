@@ -139,7 +139,7 @@ def fetch_external_data() -> list[dict]:
         timeout=30,
     )
     response.raise_for_status()
-    raw_rows = rows_from_response(response)
+    raw_rows = _rows_from_response(response)
     if not raw_rows:
         logger.info("Sveas svar innehöll inga rader denna körning.")
         return []
