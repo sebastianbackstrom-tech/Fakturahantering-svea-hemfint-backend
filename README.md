@@ -37,15 +37,14 @@ Interaktiv API-dokumentation (test för endpoints direkt i browsern):
 
 ## 3. Driftsättning
 
-Rekommendation: **Railway** eller **Render** — båda har gratisnivåer, kopplar
+ **Railway** eller **Render** — då båda har gratisnivåer, kopplas
 direkt till ett GitHub-repo, och kör `apscheduler`-jobbet (dagligt
 import/export) i bakgrunden utan extra konfiguration.
 
 1. Pusha `backend/`-mappen till ett GitHub-repo.
-2. Skapa nytt projekt på Railway/Render, koppla repot.
-3. Lägg in samma miljövariabler som i `.env` under projektets "Environment
+2. samma miljövariabler som i `.env` under projektets "Environment
    Variables".
-4. Starta. Din publika URL blir t.ex. `https://dittprojekt.up.railway.app`.
+4. Starta.  publik URL blir t.ex. `https://dittprojekt.up.railway.app`.
 
 ## 4. Koppla frontend mot backend
 
@@ -65,7 +64,6 @@ nya API.
 | `db.py`                | All Supabase-kommunikation (CRUD)                                |
 | `external_source.py`   | Hämtar/normaliserar data från din externa källa (fyll i när redo) |
 | `exporter.py`          | Skriver xlsx/csv-filer 
-|
 | `scheduler.py`  
 | `column_mapper.py`     | Mappar kolumner dynamiskt sammma matchingslogistik som i frontend.
 | `auth.py`              | multi-user stöd och kryptering. 
