@@ -158,7 +158,13 @@ def require_auth(authorization: Optional[str] = Header(None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Inte inloggad")
     token = authorization[len("Bearer "):]
-    payload = _decode_token(token)
+    
+    try:
+        payload = _decode_token(token)
+    except RuntimeError as e:
+        # SECRET_KEY/APP_USERS saknas i miljön — ett driftsproblem, inte ett
+        # ogiltigt lösenord, så det ska inte se ut som ett vanligt 401.
+        raise HTTPException(status_code=503, detail=str(e))
     if payload is None:
         raise HTTPException(status_code=401, detail="Sessionen har gått ut, logga in igen")
     return payload.get("sub", "")
