@@ -37,18 +37,26 @@ Endpoints (GET/SET-metoder mot frontend):
 import os 
 import logging
 
-from fastapi import FastAPI, HTTPException, Query, Request  
+from fastapi import FastAPI, HTTPException, Query, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from typing import Optional
 import logging
 
-from models import CaseCreate, CaseUpdate, CaseOut
+from models import (  #Nya modeller som stöder login och cases/ import- manual
+    CaseCreate, CaseUpdate, CaseOut,
+    Loginrequest, LoginResponse,
+    ManualImportRequest, ManualImportResult,
+)    
+
 import db
 from db import DatabaseError, CaseNotFoundError # Dras ej lokalt längre istället importeras från db.py  
 import exporter
 from external_source import fetch_external_data
 from scheduler import start_scheduler
+
+from auth import require_auth, verify_password, create_token, check_configured
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("fakturahantering")
@@ -86,7 +94,7 @@ ALLOWED_ORIGINS= [ #Variabel för att tillåta frontend (annan origin, t.ex. Git
 
 
 # Tillåt frontend (annan origin, t.ex. GitHub Pages eller lokal fil) att anropa API:et.
-# Byt ut "*" mot din riktiga domän i produktion.
+# Byt ut "*" mot den riktiga domän i produktion.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -99,12 +107,39 @@ app.add_middleware(
 def on_startup():
     """Startar det dagliga schemat (import på morgonen, export på kvällen)."""
     start_scheduler()
+
+    try:
+        check_configured()
+    except RuntimeError as e:
+        logger.warning(f"OBS: autentiseringe är inte korrekt konfigurerad ännu:{e}")        
     logger.info("Backend startad. Dagligt schema aktiverat.")
 
 # Endpoint utan data, används av load balancer / health check för att se om appen är igång.
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+# ─── Inloggning ───────────────────────────────────────────────────────────────
+@app.post("/login", response_model=LoginResponse)
+def login(payload: Loginrequest):
+    """
+     Loggar in en användare (se manage_users.py för hur användare skapas) och
+    returnerar en signerad, tidsbegränsad sessionstoken. Frontend sparar
+    token och skickar med den som `Authorization: Bearer <token>` på alla
+    efterföljande anrop mot skyddade endpoints.
+    """
+    try:
+        ok = verify_password(payload.username, payload.password)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=401, detail="Felaktigt användarnamn eller lösenord")
+    token = create_token(payload.username)
+    return {"token": token, "username": payload.username}
+    
+    
+    
+
 
 # ─── CRUD: ärenden ────────────────────────────────────────────────────────────
 
@@ -114,13 +149,14 @@ def get_cases(
     source: Optional[str] = Query(None, description="Filtrera på källa: svea/hemfint/both"),
     search: Optional[str] = Query(None, description="Sök i ordernr eller kundnamn"),
     overdue: Optional[bool] = Query(None, description="Visa bara förfallna"),
+    username: str = Depends(require_auth),
 ):
     """Hämta alla ärenden, med samma filtermöjligheter som frontend redan har."""
     return db.list_cases(status=status, source=source, search=search, overdue=overdue)
 
 
 @app.get("/cases/{case_id}", response_model=CaseOut)
-def get_case(case_id: str):
+def get_case(case_id: str, username: str = Depends(require_auth)): # auth krav
     case = db.get_case(case_id)
     if not case:
         raise CaseNotFoundError(case_id) #specificerar att ärendet inte hittades, vilket hanteras av exception handlern ovan.
@@ -128,7 +164,7 @@ def get_case(case_id: str):
 
 
 @app.post("/cases", response_model=CaseOut, status_code=201)
-def create_case(payload: CaseCreate):
+def create_case(payload: CaseCreate, username: str = Depends(require_auth)): # auth krav
     """Skapa nytt ärende manuellt (motsvarar 'Lägg till ärende manuellt' i UI)."""
     if payload.orderSvea and db.order_exists("orderSvea", payload.orderSvea):
         raise HTTPException(status_code=409, detail="Svea-ordernumret finns redan")
@@ -138,7 +174,7 @@ def create_case(payload: CaseCreate):
 
 
 @app.put("/cases/{case_id}", response_model=CaseOut)
-def update_case(case_id: str, payload: CaseUpdate):
+def update_case(case_id: str, payload: CaseUpdate, username: str=Depends(require_auth)): # auth krav
     """Uppdatera ärende. Om 'note' skickas med läggs den till i historiken."""
     case = db.get_case(case_id)
     if not case:
@@ -154,24 +190,39 @@ def update_case(case_id: str, payload: CaseUpdate):
 
 
 @app.delete("/cases/{case_id}", status_code=204) # Delete endpoint för att ta bort ett ärende. Returnerar 204 No Content 
-def delete_case(case_id: str):
+def delete_case(case_id: str, username: str = Depends(require_auth)): # auth krav
     case = db.get_case(case_id)
     if not case:
         raise CaseNotFoundError(case_id)
     db.delete_case(case_id)
 
 
+# ─── Manuell Excel-import (kolumnmappad i UI) ─────────────────────────────────
+# [NYTT] Hela detta avsnittet (POST /cases/import-manual) fanns inte
+# tidigare. Ersätter logik som tidigare låg helt lokalt i doImport() i
+# index.html - se db.bulk_import_manual() för själva dubblettkontrollen.
+
+@app.post("/cases/import-manual", response_model=ManualImportResult)
+def import_manual(payload: ManualImportRequest, username: str = Depends(require_auth)): # auth krav
+    """
+    Tar emot en lista med ärenden (från frontend) och försöker lägga till dem
+    i databasen. Returnerar statistik över hur många som lades till, uppdaterades
+    eller hoppades över (dubbletter).
+    """
+    rows = [r.model_dump() for r in payload.rows]
+    return db.bulk_import_manual(rows)
+
 # ─── Statistik (för dashboard-korten överst) ──────────────────────────────────
 
 @app.get("/stats")
-def get_stats():
+def get_stats(username: str = Depends(require_auth)): # auth krav
     return db.get_stats()
 
 
 # ─── Import från extern källa ─────────────────────────────────────────────────
 
 @app.post("/import/run")
-def run_import():
+def run_import(username: str = Depends(require_auth)): # auth krav
     """
     Triggar import från den externa källan manuellt (utöver det dagliga
     automatiska schemat). Användbart för en 'Importera nu'-knapp i UI.
@@ -188,7 +239,7 @@ def run_import():
 # ─── Export till xlsx / csv ───────────────────────────────────────────────────
 
 @app.get("/export/xlsx")
-def export_xlsx():
+def export_xlsx(username: str = Depends(require_auth)): # auth krav
     path = exporter.export_to_xlsx(db.list_cases())
     return FileResponse(
         path,
@@ -198,6 +249,6 @@ def export_xlsx():
 
 
 @app.get("/export/csv")
-def export_csv():
+def export_csv(username: str = Depends(require_auth)): # auth krav
     path = exporter.export_to_csv(db.list_cases())
     return FileResponse(path, media_type="text/csv", filename="fakturor.csv")
