@@ -49,3 +49,32 @@ class CaseOut(CaseBase):
     created: int
     updated: int
     history: list[HistoryItem] = Field(default_factory=list)
+
+# ─── Auth ────────────────────────────────────────────────────────────────────
+# klasserna används av main.py nya POST login-endpoint. 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+    username: str
+
+
+# ─── Manuell Excel-import (kolumnmappad i UI, se index.html) ────────────────
+
+# Låg tidigare lokalt i index.html doImport() funktionen ersätter den med nya main.py POST /cases/import-manual
+
+class ManualImportRow(CaseBase):
+    note: Optional[str] = None  # om satt, läggs den till som ny historikpost
+
+class ManualImportRequest(BaseModel):
+    rows: list[ManualImportRow]
+
+class ManualImportResult(BaseModel):
+    added: int
+    skipped: int
+    dupes: int
+    
+
