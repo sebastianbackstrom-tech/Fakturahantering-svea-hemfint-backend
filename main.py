@@ -45,7 +45,7 @@ import logging
 
 from models import (  #Nya modeller som stöder login och cases/ import- manual
     CaseCreate, CaseUpdate, CaseOut,
-    Loginrequest, LoginResponse,
+    LoginRequest, LoginResponse,
     ManualImportRequest, ManualImportResult,
 )    
 
@@ -121,7 +121,7 @@ def health():
 
 # ─── Inloggning ───────────────────────────────────────────────────────────────
 @app.post("/login", response_model=LoginResponse)
-def login(payload: Loginrequest):
+def login(payload: LoginRequest):
     """
      Loggar in en användare (se manage_users.py för hur användare skapas) och
     returnerar en signerad, tidsbegränsad sessionstoken. Frontend sparar
