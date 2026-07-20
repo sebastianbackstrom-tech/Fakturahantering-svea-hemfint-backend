@@ -142,6 +142,9 @@ def _decode_token(token: str) -> Optional[dict]: #Dekrypterar och verifierar en 
 def verify_token(token: str) -> bool: #Verifierar om en token är giltig (signatur och utgångstid). Returnerar en boolean True om giltig, annars False. 
     return _decode_token(token) is not None
 
+def check_configured() -> None: #Kontrollerar att nödvändiga miljövariabler är satta (SECRET_KEY och APP_USERS). Om någon saknas, kastas ett RuntimeError med en beskrivande felmeddelande.
+
+_check_config()
 
 def require_auth(authorization: Optional[str] = Header(None)) -> str: 
     """FastAPI-dependency. Lägg till `username: str = Depends(require_auth)`
