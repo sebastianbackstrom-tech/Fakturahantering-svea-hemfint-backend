@@ -243,6 +243,77 @@ def bulk_upsert_from_external(rows: list[dict]) -> dict:
         _run(supabase.table(TABLE).insert(to_insert), "bulk_upsert_from_external") #Kör en infogningsquery mot databasen med alla nya ärenden som samlats i to_insert-listan.
 
     return {"added": added, "updated": 0, "skipped": skipped}
+def bulk_import_manual(rows: list[dict]) -> dict:
+    # [NYTT] Hela denna funktion fanns inte tidigare. Motsvarar backend-sidan
+    # av det som tidigare gjordes helt i webbläsaren (doImport() i
+    # index.html), fast med dubblettkontroll mot den riktiga databasen
+    # istället för bara webbläsarens minne.
+    """
+    Tar emot rader som redan kolumnmappats manuellt i UI (användaren laddade
+    upp en Excel-fil och valde vilka kolumner som motsvarar vilka fält — se
+    doImport() i index.html). Till skillnad från bulk_upsert_from_external
+    (den automatiska dagliga importen) särskiljer denna funktion:
+      - "dupes"   -> ordernumret finns redan (i databasen eller tidigare i
+                     samma fil)
+      - "skipped" -> raden saknade helt ordernummer
+    eftersom frontend visar dessa som två separata siffror till användaren,
+    precis som den gamla rent lokala doImport()-funktionen gjorde.
+    """
+    all_cases = list_cases()
+    existing_svea = {r["orderSvea"] for r in all_cases if r.get("orderSvea")}
+    existing_hemfint = {r["orderHemfint"] for r in all_cases if r.get("orderHemfint")}
+ 
+    to_insert: list[dict[str, Any]] = []
+    added, skipped, dupes = 0, 0, 0
+    now = _now_ms()
+ 
+    for row in rows:
+        svea = row.get("orderSvea") or ""
+        hemfint = row.get("orderHemfint") or ""
+ 
+        if not svea and not hemfint:
+            skipped += 1
+            continue
+        if svea and svea in existing_svea:
+            dupes += 1
+            continue
+        if hemfint and hemfint in existing_hemfint:
+            dupes += 1
+            continue
+ 
+        history = []
+        note = row.get("note")
+        if note:
+            history.append({"ts": now, "text": note, "type": "import"})
+ 
+        to_insert.append({
+            "id": _new_id(),
+            "orderSvea": svea,
+            "orderHemfint": hemfint,
+            "kund": row.get("kund", "") or "",
+            "belopp": row.get("belopp", "") or "",
+            "status": row.get("status") or "open",
+            "fakturadatum": row.get("fakturadatum", "") or "",
+            "forfallodatum": row.get("forfallodatum", "") or "",
+            "created": now,
+            "updated": now,
+            "history": history,
+        })
+        if svea:
+            existing_svea.add(svea)
+        if hemfint:
+            existing_hemfint.add(hemfint)
+        added += 1
+ 
+    if to_insert:
+        _run(supabase.table(TABLE).insert(to_insert), "bulk_import_manual")
+ 
+    return {"added": added, "skipped": skipped, "dupes": dupes}
+
+                     
+
+
+     
 
 
 # ─── DELETE ────────────────────────────────────────────────────────────────
