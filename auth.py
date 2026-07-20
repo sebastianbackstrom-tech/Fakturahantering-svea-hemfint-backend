@@ -142,9 +142,14 @@ def _decode_token(token: str) -> Optional[dict]: #Dekrypterar och verifierar en 
 def verify_token(token: str) -> bool: #Verifierar om en token är giltig (signatur och utgångstid). Returnerar en boolean True om giltig, annars False. 
     return _decode_token(token) is not None
 
-def check_configured() -> None: #Kontrollerar att nödvändiga miljövariabler är satta (SECRET_KEY och APP_USERS). Om någon saknas, kastas ett RuntimeError med en beskrivande felmeddelande.
-
-_check_config()
+def check_configured() -> None:
+    # [NYTT] Fanns inte tidigare. Publik wrapper runt _check_config() så att
+    # main.py kan anropa den vid startup utan att röra det privata namnet.
+    """Publik version av _check_config(), tänkt att anropas t.ex. vid
+    appens startup för att logga en varning tidigt om SECRET_KEY/APP_USERS
+    saknas, istället för att varje användare får ett kryptiskt fel först vid
+    inloggningsförsök."""
+    _check_config()
 
 def require_auth(authorization: Optional[str] = Header(None)) -> str: 
     """FastAPI-dependency. Lägg till `username: str = Depends(require_auth)`
